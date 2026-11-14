@@ -355,8 +355,17 @@ def read_questions(data_dir: Path) -> list[Question]:
         return questions
 
 
+def write_fallback(questions: list[Question], output: Path) -> None:
+    """Сохраняет полный CSV до сетевых запросов на случай лимита времени."""
+    with output.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, quoting=csv.QUOTE_MINIMAL)
+        writer.writerow(("id", "answer"))
+        writer.writerows((question.id, UNAVAILABLE) for question in questions)
+
+
 def run(data_dir: Path, output: Path) -> None:
     questions = read_questions(data_dir)
+    write_fallback(questions, output)
     key = env("LLM_API_KEY", "OPENAI_API_KEY")
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     workers = setting("MAX_WORKERS", 4, 1, 8)
