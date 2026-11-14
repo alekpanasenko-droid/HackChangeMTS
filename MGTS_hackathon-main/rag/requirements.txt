@@ -1,0 +1,8 @@
+# Direct RAG dependencies from the supplied requirements list.
+faiss-cpu==1.15.1
+numpy==2.2.6
+httpx==0.28.1
+
+# Local BGE-M3 backend required for the standalone Docker image.
+sentence-transformers==5.1.2
+transformers==4.57.6

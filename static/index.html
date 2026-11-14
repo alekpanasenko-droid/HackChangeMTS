@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#e30613">
+  <meta name="description" content="ИИ-консультант МТС Energytool: разберитесь в энергопотреблении и найдите подходящее решение.">
+  <title>МТС Energytool — ИИ-консультант</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 40 40" fill="none"><path d="M20 7c7.2 0 13 5.8 13 13S27.2 33 20 33 7 27.2 7 20 12.8 7 20 7Z" stroke="white" stroke-width="3"/><path d="M7.5 20h25M20 7.5c-4.5 4-6.5 8.1-6.5 12.5S15.5 28.5 20 32.5M20 7.5c4.5 4 6.5 8.1 6.5 12.5S24.5 28.5 20 32.5" stroke="white" stroke-width="2"/></svg></span><span class="brand-word">МТС <b>Energytool</b></span></div>
+      <div class="sidebar-intro">Энергия для вашего бизнеса<br>под контролем.</div>
+      <button class="new-chat" id="new-chat">＋ &nbsp; Новый диалог</button>
+      <div class="side-heading">ИСТОРИЯ ДИАЛОГОВ</div>
+      <div id="sessions" class="session-list"></div>
+      <div class="sidebar-bottom"><div class="sidebar-bottom-icon">✦</div><div><strong>Нужна помощь?</strong><span>Расскажите о своей задаче в чате</span></div></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="mobile-menu" id="menu" aria-label="История">☰</button>
+        <div class="top-title"><div class="breadcrumb">МТС Energytool <span>/</span> Консультант</div><strong>ИИ-консультант <span class="online-dot"></span></strong><small>Поможем разобраться с энергозатратами</small></div>
+        <button class="debug-toggle" id="debug-toggle" aria-pressed="false">⌁ <span>Режим отладки</span><span class="switch"></span></button>
+      </header>
+
+      <div id="conversation" class="conversation">
+        <section class="welcome" id="welcome">
+          <div class="hero-art" aria-hidden="true"><div class="hero-orbit orbit-one"></div><div class="hero-orbit orbit-two"></div><div class="hero-core"><svg viewBox="0 0 80 80" fill="none"><path d="M43 7 18 43h19l-5 30 30-41H42l1-25Z" fill="white"/></svg></div><div class="hero-spark spark-one">✦</div><div class="hero-spark spark-two">✧</div><div class="hero-metric metric-one"><span class="metric-icon">↘</span><span>Расходы<br><b>под контролем</b></span></div><div class="hero-metric metric-two"><span class="metric-icon">◉</span><span>Энергия<br><b>в деталях</b></span></div></div>
+          <div class="eyebrow"><span></span> ИИ-КОНСУЛЬТАНТ МТС ENERGYTOOL</div>
+          <h1>Энергия работает<br><em>на ваш бизнес</em></h1>
+          <p>Помогу разобраться в энергопотреблении и найти решение для вашей задачи. Начнём с короткого вопроса.</p>
+          <div class="suggestions-label">ПОПУЛЯРНЫЕ ВОПРОСЫ</div>
+          <div class="suggestions">
+            <button data-prompt="У нас выросли расходы на электроэнергию. С чего начать анализ?"><span>↗</span> Выросли расходы на электроэнергию</button>
+            <button data-prompt="Как найти потери электроэнергии на предприятии?"><span>⌁</span> Как найти потери на предприятии?</button>
+            <button data-prompt="Как организовать удалённый учёт электроэнергии в СНТ?"><span>◉</span> Нужен удалённый учёт в СНТ</button>
+          </div>
+        </section>
+        <div id="messages" class="messages"></div>
+        <div id="manager-offer" class="manager-offer hidden">
+          <div class="offer-icon">↗</div>
+          <div><strong>Продолжим со специалистом?</strong><p>Передам менеджеру краткое резюме нашей беседы, чтобы вам не пришлось повторять всё сначала.</p></div>
+          <button id="open-lead">Оставить заявку</button>
+        </div>
+      </div>
+
+      <div class="composer-wrap">
+        <div class="composer">
+          <span class="composer-spark">✦</span>
+          <textarea id="message-input" rows="1" placeholder="Напишите, что вас интересует…" aria-label="Сообщение"></textarea>
+          <button id="send" aria-label="Отправить">↑</button>
+        </div>
+        <div class="composer-note"><span id="status">Проверка подключения…</span><span>Enter — отправить · Shift+Enter — новая строка</span></div>
+      </div>
+    </main>
+
+    <aside class="debug-panel hidden" id="debug-panel">
+      <div class="debug-head"><div><small>РЕЖИМ ОТЛАДКИ</small><h2>Как получен ответ</h2></div><button id="debug-close" aria-label="Закрыть">×</button></div>
+      <div class="debug-body" id="debug-body"><p class="muted">Выберите ответ бота, чтобы увидеть время и использованные документы.</p></div>
+    </aside>
+  </div>
+
+  <dialog id="lead-dialog">
+    <form id="lead-form" method="dialog">
+      <div class="dialog-top"><div class="dialog-icon">↗</div><button type="button" id="close-lead" aria-label="Закрыть">×</button></div>
+      <h2>Связаться с менеджером</h2>
+      <p>Оставьте тестовые контакты. К заявке автоматически добавится краткое резюме беседы.</p>
+      <label>ФИО<input name="full_name" required minlength="3" placeholder="Иванов Иван Иванович" autocomplete="name"></label>
+      <label>Телефон<input name="phone" required minlength="10" placeholder="+7 900 000-00-00" autocomplete="tel"></label>
+      <label>Компания<input name="company" required minlength="2" placeholder="Название компании" autocomplete="organization"></label>
+      <div id="lead-error" class="form-error"></div>
+      <button type="submit" class="submit-lead">Сформировать заявку</button>
+      <small>Для демонстрации используйте вымышленные данные. Заявка сохраняется только в этом приложении.</small>
+    </form>
+  </dialog>
+  <script src="/static/app.js"></script>
+</body>
+</html>

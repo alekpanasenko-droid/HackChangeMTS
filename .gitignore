@@ -1,0 +1,10 @@
+.env
+*.sqlite3
+__pycache__/
+.pytest_cache/
+MGTS_hackathon-main/rag/artifacts/
+MGTS_hackathon-main/*
+!MGTS_hackathon-main/rag/
+knowledge-base-word-work/
+knowledge-base-word.zip
+system_prompt.txt
