@@ -177,14 +177,33 @@ def row_message(row):
     return item
 
 
+def llm_settings():
+    """Resolve the local Yandex credentials or an explicitly configured compatible API."""
+    yc_key = os.getenv("YC_API_KEY", "").strip()
+    yc_folder = os.getenv("YC_FOLDER_ID", "").strip()
+    if yc_key or yc_folder:
+        return (
+            "https://ai.api.cloud.yandex.net/v1",
+            f"gpt://{yc_folder}/yandexgpt/latest" if yc_folder else "",
+            yc_key,
+            "yandex",
+        )
+    return (
+        (os.getenv("LLM_BASE_URL") or os.getenv("OPENAI_BASE_URL") or "").rstrip("/"),
+        os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or "",
+        os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY") or "",
+        "compatible",
+    )
+
+
 def model_answer(history, sources):
     if not SYSTEM_PROMPT:
         raise HTTPException(503, "Добавьте файл system_prompt.txt рядом с app.py")
-    base_url = (os.getenv("LLM_BASE_URL") or os.getenv("OPENAI_BASE_URL") or "").rstrip("/")
-    model = os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL")
-    key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
+    base_url, model, key, provider = llm_settings()
     if not base_url or not model:
-        raise HTTPException(503, "Укажите LLM_BASE_URL и LLM_MODEL в .env")
+        raise HTTPException(503, "Укажите YC_API_KEY и YC_FOLDER_ID либо LLM_BASE_URL и LLM_MODEL в .env")
+    if provider == "yandex" and not key:
+        raise HTTPException(503, "Добавьте YC_API_KEY в .env на сервере")
     if base_url.startswith("https://api.openai.com/") and not key:
         raise HTTPException(503, "Добавьте OPENAI_API_KEY в .env на сервере")
     if not sources:
@@ -244,10 +263,12 @@ def static(filename: str):
 
 @app.get("/api/status")
 def status():
-    base_url = os.getenv("LLM_BASE_URL") or os.getenv("OPENAI_BASE_URL") or ""
-    configured = bool(base_url) and bool(os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL"))
+    base_url, model, key, provider = llm_settings()
+    configured = bool(base_url and model)
     if base_url.startswith("https://api.openai.com/"):
-        configured = configured and bool(os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY"))
+        configured = configured and bool(key)
+    if provider == "yandex":
+        configured = configured and bool(key)
     return {"ready": configured and search.available and bool(SYSTEM_PROMPT), "search": search.mode,
             "knowledge_base": search.available, "model_configured": configured,
             "system_prompt": bool(SYSTEM_PROMPT)}

@@ -1,5 +1,7 @@
 .git
 .env
+*.env
+.env.*
 data
 *.sqlite3
 __pycache__
