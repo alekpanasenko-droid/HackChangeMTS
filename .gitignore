@@ -13,3 +13,5 @@ knowledge-base-word.zip
 system_prompt.txt
 data/
 .venv/
+.venv-platform/
+output/
