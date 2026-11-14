@@ -16,6 +16,21 @@ class Backend:
 
 
 class AgentTests(unittest.TestCase):
+    def test_general_product_question_uses_product_map(self):
+        class ProductBackend(Backend):
+            def retrieve(self, question, top_k):
+                if question == "Карта продуктов МТС EnergyTool":
+                    return [{"id": "S2", "source": "00-reference/00-product-map.md",
+                             "heading": "Карта продуктов МТС EnergyTool",
+                             "text": "Задачи клиента и подходящие направления", "score": 1.0}]
+                return [{"id": "S1", "source": "10-energy/10-market.md",
+                         "heading": "Рынок электроэнергии",
+                         "text": "За что вы платите", "score": 1.0}]
+
+        result = SearchAgent(ProductBackend([])).find("Что вы предлагаете?")
+        self.assertTrue(result.sufficient)
+        self.assertEqual(result.sources[0]["source"], "00-reference/00-product-map.md")
+
     def test_orchestrator_clarifies_without_evidence(self):
         called = []
         agent = OrchestratorAgent(SearchAgent(Backend([])), lambda *_: called.append(True))

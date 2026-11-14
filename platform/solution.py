@@ -32,6 +32,7 @@ BOUNDARIES = (
     re.compile(r"\s+"),
 )
 TURN = re.compile(r"(?im)^[ \t]*(пользователь|ассистент|user|assistant)[ \t]*:[ \t]*")
+PRODUCT_OVERVIEW = re.compile(r"\b(?:предлага\w*|продукт\w*|решени\w*|услуг\w*|направлен\w*)\b")
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 AnswerText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=10_000)]
 Number = TypeVar("Number", int, float)
@@ -333,6 +334,14 @@ class Retriever:
             for rank, index in enumerate(ranking[:max(16, self.top_k)], 1):
                 combined[index] = combined.get(index, 0.0) + 1.0 / (60 + rank)
         best = sorted(combined, key=lambda index: (-combined[index], index))[:self.top_k]
+        # Для общего вопроса о предложении компании карта продуктов даёт
+        # контекст подбора; не даём словам «вы» и «что» вытеснить её тарифами.
+        if PRODUCT_OVERVIEW.search(query[:300].lower()) and len(tokenize(query[:300])) <= 20:
+            product_map = next((index for index, passage in enumerate(self.passages)
+                                if passage.source.endswith("00-product-map.md")), None)
+            if product_map is not None:
+                best = [product_map] + [index for index in best if index != product_map]
+                best = best[:self.top_k]
         return [self.passages[index] for index in best]
 
 

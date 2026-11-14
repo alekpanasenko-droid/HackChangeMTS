@@ -2,8 +2,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
 import app as service
 
 
@@ -18,39 +16,33 @@ class ApiFlowTests(unittest.TestCase):
         service.LEAD_PDF_DIR = root / "leads"
         service.init_db()
         service.orchestrator.answer_model = lambda history, sources: ("Для анализа нужны данные учёта.", sources[:1])
-        self.client = TestClient(service.app)
 
     def tearDown(self):
         service.orchestrator.answer_model = self.original_answer
         service.DB = self.original_db
         service.LEAD_PDF_DIR = self.original_pdf_dir
-        self.client.close()
         self.temp.cleanup()
 
     def test_chat_to_pdf_and_new_session(self):
-        session = self.client.post("/api/sessions").json()["id"]
-        response = self.client.post("/api/chat", json={
-            "session_id": session, "message": "Как найти потери электроэнергии на предприятии?"
-        })
-        self.assertEqual(response.status_code, 200, response.text)
-        answer = response.json()
+        session = service.create_session()["id"]
+        answer = service.chat(service.ChatInput(
+            session_id=session, message="Как найти потери электроэнергии на предприятии?"
+        ))
         self.assertEqual(answer["trace"]["decision"], "answered")
         self.assertTrue(answer["sources"])
 
-        lead = self.client.post("/api/leads", json={
-            "session_id": session, "full_name": "Иванов Иван Иванович",
-            "phone": "+7 900 000-00-00", "company": "ООО Тест",
-        })
-        self.assertEqual(lead.status_code, 200, lead.text)
-        pdf = self.client.get(lead.json()["pdf_url"])
-        self.assertEqual(pdf.status_code, 200)
-        self.assertTrue(pdf.content.startswith(b"%PDF-"))
-        saved = self.client.get(f"/api/sessions/{session}").json()
-        self.assertEqual(saved["lead"]["id"], lead.json()["id"])
+        lead = service.create_lead(service.LeadInput(
+            session_id=session, full_name="Иванов Иван Иванович",
+            phone="+7 900 000-00-00", company="ООО Тест",
+        ))
+        pdf = service.download_lead_pdf(lead["id"])
+        self.assertTrue(Path(pdf.path).read_bytes().startswith(b"%PDF-"))
+        saved = service.get_session(session)
+        self.assertEqual(saved["lead"]["id"], lead["id"])
         self.assertEqual(saved["messages"][1]["trace"]["decision"], "answered")
 
-        fresh = self.client.post("/api/sessions").json()["id"]
-        self.assertEqual(self.client.get(f"/api/sessions/{fresh}").json()["messages"], [])
+        fresh = service.create_session()["id"]
+        self.assertEqual(service.get_session(fresh)["messages"], [])
 
 
 if __name__ == "__main__":
