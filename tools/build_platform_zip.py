@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import re
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -11,7 +10,6 @@ from zipfile import ZIP_DEFLATED, ZipFile
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "platform" / "solution.py"
 REQUIREMENTS = ROOT / "platform" / "requirements.txt"
-PROMPT = ROOT / "system_prompt.txt"
 OUTPUT = ROOT / "output" / "energytool-platform-submission.zip"
 EXPECTED = {"solution.py", "requirements.txt"}
 ALLOWED = {"httpx", "numpy", "pydantic", "rank-bm25"}
@@ -20,23 +18,10 @@ MAX_ZIP_BYTES = 128 * 1024 * 1024
 
 def build_solution() -> str:
     source = SOURCE.read_text(encoding="utf-8-sig")
-    prompt = PROMPT.read_text(encoding="utf-8-sig").strip()
-    if not prompt:
-        raise ValueError("Пустой системный промпт")
-    tree = ast.parse(source)
-    assignments = [node for node in tree.body if isinstance(node, ast.Assign)
-                   and any(isinstance(target, ast.Name) and target.id == "SYSTEM"
-                           for target in node.targets)]
-    if len(assignments) != 1:
-        raise ValueError("В platform/solution.py должен быть ровно один SYSTEM")
-    target = assignments[0]
-    format_rules = ast.literal_eval(target.value)
-    combined = prompt + "\n\n[Формат ответа для автоматической проверки]\n" + format_rules
-    lines = source.splitlines(keepends=True)
-    lines[target.lineno - 1:target.end_lineno] = ["SYSTEM = " + repr(combined) + "\n"]
-    result = "".join(lines)
-    compile(result, "solution.py", "exec")
-    return result
+    # Конкурсный промпт хранится непосредственно в solution.py.
+    # Исходный диалоговый промпт продолжает использоваться веб-приложением.
+    compile(source, "solution.py", "exec")
+    return source
 
 
 def validate_requirements(text: str) -> None:
