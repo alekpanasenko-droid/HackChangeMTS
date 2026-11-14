@@ -194,8 +194,22 @@ def dialogue(raw: str) -> tuple[str, list[Turn]]:
     return query, visible
 
 
+SEARCH_STOP = set("а и но или в во на по к ко с со у о об от до за из для при над под "
+                  "я мы вы он она они это этот эта эти того так там тут же ли бы уже еще "
+                  "как что какой какая какие каких почему можно нужно надо чтобы если "
+                  "нас нам вас вам ваш ваша ваши вашей нашем у нас есть будет будут "
+                  "сначала потом вообще пожалуйста подскажите расскажите".split())
+
+
 def tokenize(value: str) -> list[str]:
-    return WORD.findall(value.lower().replace("ё", "е"))
+    return [word for word in WORD.findall(value.lower().replace("ё", "е"))
+            if word not in SEARCH_STOP]
+
+
+def character_terms(value: str) -> list[str]:
+    # Общая часть «счетчика», «счетчиков» остаётся доступной поиску.
+    return [word[start:start + 4] for word in tokenize(value) if len(word) >= 5
+            for start in range(len(word) - 3)]
 
 
 class Proxy:
@@ -281,8 +295,9 @@ class Retriever:
     def __init__(self, passages: list[Passage], proxy: Proxy):
         self.passages = passages
         self.proxy = proxy
-        self.top_k = setting("TOP_K", 6, 1, 12)
+        self.top_k = setting("TOP_K", 8, 1, 12)
         self.lexical = None
+        self.character = None
         self.dense = None
         if not passages:
             return
@@ -290,6 +305,9 @@ class Retriever:
         tokens = [tokenize(text) for text in texts]
         if any(tokens):
             self.lexical = BM25Plus(tokens, delta=0)
+        characters = [character_terms(text) for text in texts]
+        if any(characters):
+            self.character = BM25Plus(characters, delta=0)
         try:
             # База платформы загружается один раз. Все вопросы используют общую матрицу.
             self.dense = np.concatenate([
@@ -303,19 +321,22 @@ class Retriever:
         rankings = []
         if self.lexical is not None:
             scores = self.lexical.get_scores(tokenize(query))
-            rankings.append([i for i in np.argsort(-scores, kind="stable") if scores[i] > 0])
+            rankings.append((0.5, [i for i in np.argsort(-scores, kind="stable") if scores[i] > 0]))
+        if self.character is not None:
+            scores = self.character.get_scores(character_terms(query))
+            rankings.append((0.5, [i for i in np.argsort(-scores, kind="stable") if scores[i] > 0]))
         if self.dense is not None:
             try:
                 vector = self.proxy.embeddings([query])[0]
-                rankings.append(np.argsort(-(self.dense @ vector), kind="stable"))
+                rankings.append((1.0, np.argsort(-(self.dense @ vector), kind="stable")))
             except Exception as error:
                 log("Поиск BGE-M3, используется BM25", error)
 
         # Reciprocal Rank Fusion объединяет ранги независимо от шкал двух методов.
         combined: dict[int, float] = {}
-        for ranking in rankings:
+        for weight, ranking in rankings:
             for rank, index in enumerate(ranking[:max(16, self.top_k)], 1):
-                combined[index] = combined.get(index, 0.0) + 1.0 / (60 + rank)
+                combined[index] = combined.get(index, 0.0) + weight / (60 + rank)
         best = sorted(combined, key=lambda index: (-combined[index], index))[:self.top_k]
         # Для общего вопроса о предложении компании карта продуктов даёт
         # контекст подбора; не даём словам «вы» и «что» вытеснить её тарифами.
@@ -325,7 +346,22 @@ class Retriever:
             if product_map is not None:
                 best = [product_map] + [index for index in best if index != product_map]
                 best = best[:self.top_k]
-        return [self.passages[index] for index in best]
+        result = []
+        for position, index in enumerate(best):
+            passage = self.passages[index]
+            text = passage.text
+            # Расширяем длинную секцию, а у двух лучших результатов также
+            # соседние разделы: характеристики и ограничения часто разделены.
+            for adjacent in (index - 1, index + 1):
+                if adjacent in best or not 0 <= adjacent < len(self.passages):
+                    continue
+                neighbor = self.passages[adjacent]
+                if neighbor.source == passage.source and (neighbor.heading == passage.heading or position < 2):
+                    context = neighbor.search_text()
+                    text = (context + "\n" + text if adjacent < index
+                            else text + "\n" + context)
+            result.append(Passage(passage.source, passage.heading, text))
+        return result
 
 
 def read_questions(data_dir: Path) -> list[Question]:
