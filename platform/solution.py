@@ -194,22 +194,8 @@ def dialogue(raw: str) -> tuple[str, list[Turn]]:
     return query, visible
 
 
-SEARCH_STOP = set("а и но или в во на по к ко с со у о об от до за из для при над под "
-                  "я мы вы он она они это этот эта эти того так там тут же ли бы уже еще "
-                  "как что какой какая какие каких почему можно нужно надо чтобы если "
-                  "нас нам вас вам ваш ваша ваши вашей нашем у нас есть будет будут "
-                  "сначала потом вообще пожалуйста подскажите расскажите".split())
-
-
 def tokenize(value: str) -> list[str]:
-    return [word for word in WORD.findall(value.lower().replace("ё", "е"))
-            if word not in SEARCH_STOP]
-
-
-def character_terms(value: str) -> list[str]:
-    # Общая часть «счетчика», «счетчиков» остаётся доступной поиску.
-    return [word[start:start + 4] for word in tokenize(value) if len(word) >= 5
-            for start in range(len(word) - 3)]
+    return WORD.findall(value.lower().replace("ё", "е"))
 
 
 class Proxy:
@@ -218,21 +204,26 @@ class Proxy:
         self.deadline = deadline
         self.url = env("LLM_BASE_URL", "OPENAI_BASE_URL", "BASE_URL").rstrip("/")
         self.model = env("LLM_MODEL", "OPENAI_MODEL", "GEN_MODEL")
-        embed_model = env("EMB_MODEL", default="BAAI/bge-m3")
-        self.embed_model = embed_model if embed_model.lower() == "baai/bge-m3" else "BAAI/bge-m3"
+        self.embed_model = env("EMB_MODEL", default="baai/bge-m3")
+        self.rerank_model = env("RERANKER_MODEL", default="qwen/qwen3-reranker-8b")
+        self.rerank_disabled = False
         self.max_tokens = setting("MAX_TOKENS", 2048, 1, 131072)
         self.temperature = setting("TEMPERATURE", 0.0, 0.0, 2.0)
 
     def post(self, endpoint: str, payload: dict, *, timeout: float) -> dict:
         if not self.url:
             raise ValueError("Отсутствует LLM_BASE_URL")
+        key_names = {"embeddings": "EMBEDDER_API_KEY", "rerank": "RERANKER_API_KEY"}
+        key = env(key_names.get(endpoint, "LLM_API_KEY"), "LLM_API_KEY", "OPENAI_API_KEY")
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
         for attempt in range(2):
             remaining = self.deadline - monotonic()
             if remaining <= 1:
                 raise TimeoutError("Время работы близко к лимиту")
             try:
                 response = self.client.post(
-                    f"{self.url}/{endpoint}", json=payload, timeout=min(timeout, remaining)
+                    f"{self.url}/{endpoint}", json=payload, headers=headers,
+                    timeout=min(timeout, remaining)
                 )
                 response.raise_for_status()
                 return response.json()
@@ -258,6 +249,30 @@ class Proxy:
         if not np.isfinite(norms).all() or np.any(norms == 0):
             raise ValueError("Некорректные нормы эмбеддингов")
         return vectors / norms
+
+    def rerank(self, query: str, passages: list[Passage], top_n: int) -> list[Passage]:
+        if self.rerank_disabled or self.deadline - monotonic() < 60:
+            raise TimeoutError("Реранкер недоступен или оставлено время на генерацию")
+        count = min(top_n, len(passages))
+        try:
+            result = self.post("rerank", {
+                "model": self.rerank_model,
+                "query": query,
+                "documents": [p.source + "\n" + p.search_text() for p in passages],
+                "top_n": count,
+            }, timeout=30)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code in {400, 401, 403, 404, 422}:
+                self.rerank_disabled = True
+            raise
+        entries = result.get("results", result.get("data", []))
+        if not isinstance(entries, list):
+            raise ValueError("Некорректный результат реранкера")
+        indices = [entry.get("index") for entry in entries if isinstance(entry, dict)]
+        if (len(indices) != count or any(type(i) is not int or not 0 <= i < len(passages)
+                                        for i in indices) or len(set(indices)) != len(indices)):
+            raise ValueError("Некорректные индексы реранкера")
+        return [passages[i] for i in indices]
 
     def generate(self, history: list[Turn], passages: list[Passage]) -> str:
         if not self.model:
@@ -295,9 +310,10 @@ class Retriever:
     def __init__(self, passages: list[Passage], proxy: Proxy):
         self.passages = passages
         self.proxy = proxy
-        self.top_k = setting("TOP_K", 8, 1, 12)
+        self.top_k = setting("TOP_K", 6, 1, 12)
+        self.candidate_count = 30
+        self.final_count = setting("RERANKER_TOP_N", 6, 1, 12)
         self.lexical = None
-        self.character = None
         self.dense = None
         if not passages:
             return
@@ -305,9 +321,6 @@ class Retriever:
         tokens = [tokenize(text) for text in texts]
         if any(tokens):
             self.lexical = BM25Plus(tokens, delta=0)
-        characters = [character_terms(text) for text in texts]
-        if any(characters):
-            self.character = BM25Plus(characters, delta=0)
         try:
             # База платформы загружается один раз. Все вопросы используют общую матрицу.
             self.dense = np.concatenate([
@@ -321,23 +334,27 @@ class Retriever:
         rankings = []
         if self.lexical is not None:
             scores = self.lexical.get_scores(tokenize(query))
-            rankings.append((0.5, [i for i in np.argsort(-scores, kind="stable") if scores[i] > 0]))
-        if self.character is not None:
-            scores = self.character.get_scores(character_terms(query))
-            rankings.append((0.5, [i for i in np.argsort(-scores, kind="stable") if scores[i] > 0]))
+            rankings.append([i for i in np.argsort(-scores, kind="stable") if scores[i] > 0])
         if self.dense is not None:
             try:
                 vector = self.proxy.embeddings([query])[0]
-                rankings.append((1.0, np.argsort(-(self.dense @ vector), kind="stable")))
+                rankings.append(np.argsort(-(self.dense @ vector), kind="stable"))
             except Exception as error:
                 log("Поиск BGE-M3, используется BM25", error)
 
         # Reciprocal Rank Fusion объединяет ранги независимо от шкал двух методов.
         combined: dict[int, float] = {}
-        for weight, ranking in rankings:
+        for ranking in rankings:
             for rank, index in enumerate(ranking[:max(16, self.top_k)], 1):
-                combined[index] = combined.get(index, 0.0) + weight / (60 + rank)
+                combined[index] = combined.get(index, 0.0) + 1.0 / (60 + rank)
         best = sorted(combined, key=lambda index: (-combined[index], index))[:self.top_k]
+        # Отдельный широкий пул для реранкера. При его сбое best остаётся
+        # результатом алгоритма версии, получившей 48,194 балла.
+        candidate_scores: dict[int, float] = {}
+        for ranking in rankings:
+            for rank, index in enumerate(ranking[:self.candidate_count], 1):
+                candidate_scores[index] = candidate_scores.get(index, 0.0) + 1.0 / (60 + rank)
+        candidates = sorted(candidate_scores, key=lambda i: (-candidate_scores[i], i))[:self.candidate_count]
         # Для общего вопроса о предложении компании карта продуктов даёт
         # контекст подбора; не даём словам «вы» и «что» вытеснить её тарифами.
         if PRODUCT_OVERVIEW.search(query[:300].lower()) and len(tokenize(query[:300])) <= 20:
@@ -346,22 +363,14 @@ class Retriever:
             if product_map is not None:
                 best = [product_map] + [index for index in best if index != product_map]
                 best = best[:self.top_k]
-        result = []
-        for position, index in enumerate(best):
-            passage = self.passages[index]
-            text = passage.text
-            # Расширяем длинную секцию, а у двух лучших результатов также
-            # соседние разделы: характеристики и ограничения часто разделены.
-            for adjacent in (index - 1, index + 1):
-                if adjacent in best or not 0 <= adjacent < len(self.passages):
-                    continue
-                neighbor = self.passages[adjacent]
-                if neighbor.source == passage.source and (neighbor.heading == passage.heading or position < 2):
-                    context = neighbor.search_text()
-                    text = (context + "\n" + text if adjacent < index
-                            else text + "\n" + context)
-            result.append(Passage(passage.source, passage.heading, text))
-        return result
+                candidates = [product_map] + [index for index in candidates if index != product_map]
+                candidates = candidates[:self.candidate_count]
+        if candidates:
+            try:
+                return self.proxy.rerank(query, [self.passages[i] for i in candidates], self.final_count)
+            except Exception as error:
+                log("Реранкер, используется исходный гибридный поиск", error)
+        return [self.passages[index] for index in best]
 
 
 def read_questions(data_dir: Path) -> list[Question]:
