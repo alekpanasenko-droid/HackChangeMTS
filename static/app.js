@@ -15,6 +15,7 @@ async function newSession() {
   sessionStorage.setItem('energytool_session', session.id);
   state.messages = [];
   renderMessages();
+  $('lead-download').classList.add('hidden');
   await loadSessions();
 }
 async function loadSessions() {
@@ -28,6 +29,8 @@ async function openSession(id) {
   sessionStorage.setItem('energytool_session', id);
   state.messages = session.messages;
   renderMessages();
+  $('lead-download').classList.toggle('hidden', !session.lead);
+  if (session.lead) $('pdf-link').href = `/api/leads/${session.lead.id}/pdf`;
   $('manager-offer').classList.toggle('hidden', !!session.lead || state.messages.filter(m => m.role === 'user').length < 2);
   $('sidebar').classList.remove('open');
   await loadSessions();
@@ -45,7 +48,8 @@ function renderMessages() {
 function inspect(index) {
   const message = state.messages[index];
   const sources = message.sources || [];
-  $('debug-body').innerHTML = `<div class="metric"><span>Время ответа</span><b>${message.response_ms == null ? '—' : (message.response_ms / 1000).toFixed(2) + ' с'}</b></div><h3>ИСПОЛЬЗОВАННЫЕ ДОКУМЕНТЫ · ${sources.length}</h3>${sources.length ? sources.map(source => `<div class="source-card"><strong>${escapeHtml(source.source)}</strong><small>${escapeHtml(source.heading || 'Документ')} · строки ${source.line_start ?? '—'}–${source.line_end ?? '—'} · ${escapeHtml(source.id)}</small><p>${escapeHtml(source.text)}</p></div>`).join('') : '<p class="muted">Для этого ответа модель не указала подтверждающих фрагментов.</p>'}`;
+  const trace = message.trace || {};
+  $('debug-body').innerHTML = `<div class="metric"><span>Время ответа</span><b>${message.response_ms == null ? '—' : (message.response_ms / 1000).toFixed(2) + ' с'}</b></div><div class="agent-trace"><h3>РАБОТА АГЕНТОВ</h3><p><b>Поисковый агент</b><span>${trace.search_ms == null ? '—' : trace.search_ms + ' мс'} · ${escapeHtml(trace.search_mode || '—')}</span></p><p><b>Оркестратор</b><span>${escapeHtml(trace.decision || '—')} · уверенность ${trace.confidence == null ? '—' : Math.round(trace.confidence * 100) + '%'}</span></p><p><b>Ответ модели</b><span>${trace.generation_ms == null ? '—' : trace.generation_ms + ' мс'}</span></p>${trace.reason ? `<small>${escapeHtml(trace.reason)}</small>` : ''}</div><h3>ИСПОЛЬЗОВАННЫЕ ДОКУМЕНТЫ · ${sources.length}</h3>${sources.length ? sources.map(source => `<div class="source-card"><strong>${escapeHtml(source.source)}</strong><small>${escapeHtml(source.heading || 'Документ')} · строки ${source.line_start ?? '—'}–${source.line_end ?? '—'} · ${escapeHtml(source.id)}</small><p>${escapeHtml(source.text)}</p></div>`).join('') : '<p class="muted">Для этого ответа модель не указала подтверждающих фрагментов.</p>'}`;
   state.debug = true;
   $('debug-panel').classList.remove('hidden');
   $('debug-toggle').setAttribute('aria-pressed', 'true');
@@ -66,7 +70,7 @@ async function send(text) {
   setBusy(true);
   try {
     const result = await api('/chat', {method:'POST',body:JSON.stringify({session_id:state.sessionId,message:text})});
-    state.messages.push({role:'assistant',content:result.answer,created_at:new Date().toISOString(),response_ms:result.response_ms,sources:result.sources});
+    state.messages.push({role:'assistant',content:result.answer,created_at:new Date().toISOString(),response_ms:result.response_ms,sources:result.sources,trace:result.trace});
     renderMessages();
     $('manager-offer').classList.toggle('hidden', !result.offer_manager);
     await loadSessions();

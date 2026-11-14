@@ -9,6 +9,7 @@ import re
 import sqlite3
 import sys
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
@@ -19,11 +20,15 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from agents.orchestrator import OrchestratorAgent
+from agents.search_agent import SearchAgent
+from agents.summary_agent import ManagerBrief, SummaryAgent
 
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 KB = ROOT / "MGTS_hackathon-main" / "knowledge-base"
 DB = ROOT / "data" / "energytool.sqlite3"
+LEAD_PDF_DIR = ROOT / "data" / "leads"
 PROMPT_PATH = ROOT / "system_prompt.txt"
 SYSTEM_PROMPT = PROMPT_PATH.read_text(encoding="utf-8-sig") if PROMPT_PATH.is_file() else ""
 WORD = re.compile(r"[a-zа-яё0-9]+", re.I)
@@ -37,12 +42,20 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+@contextmanager
 def connect():
     DB.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(DB, timeout=10)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys=ON")
-    return db
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 def init_db():
@@ -55,6 +68,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
             role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL,
             response_ms INTEGER, sources_json TEXT NOT NULL DEFAULT '[]',
+            trace_json TEXT NOT NULL DEFAULT '{}',
             FOREIGN KEY(session_id) REFERENCES sessions(id)
         );
         CREATE TABLE IF NOT EXISTS leads (
@@ -64,6 +78,9 @@ def init_db():
             FOREIGN KEY(session_id) REFERENCES sessions(id)
         );
         """)
+        columns = {row[1] for row in db.execute("PRAGMA table_info(messages)")}
+        if "trace_json" not in columns:
+            db.execute("ALTER TABLE messages ADD COLUMN trace_json TEXT NOT NULL DEFAULT '{}'")
 
 
 init_db()
@@ -153,6 +170,8 @@ class Search:
 
 
 search = Search()
+search_agent = SearchAgent(search)
+summary_agent = SummaryAgent()
 
 
 class ChatInput(BaseModel):
@@ -174,6 +193,7 @@ def session_exists(db, session_id):
 def row_message(row):
     item = dict(row)
     item["sources"] = json.loads(item.pop("sources_json"))
+    item["trace"] = json.loads(item.pop("trace_json"))
     return item
 
 
@@ -249,6 +269,9 @@ def model_answer(history, sources):
         raise HTTPException(502, "Не удалось получить проверенный ответ модели. Попробуйте ещё раз.") from None
 
 
+orchestrator = OrchestratorAgent(search_agent, model_answer)
+
+
 @app.get("/")
 def home():
     return FileResponse(ROOT / "static" / "index.html")
@@ -270,6 +293,7 @@ def status():
     if provider == "yandex":
         configured = configured and bool(key)
     return {"ready": configured and search.available and bool(SYSTEM_PROMPT), "search": search.mode,
+            "agents": ["search", "orchestrator", "summary_pdf"],
             "knowledge_base": search.available, "model_configured": configured,
             "system_prompt": bool(SYSTEM_PROMPT)}
 
@@ -316,25 +340,26 @@ def chat(data: ChatInput):
         history = [dict(row) for row in db.execute(
             "SELECT role,content FROM messages WHERE session_id=? ORDER BY id", (data.session_id,))]
     current = history + [{"role": "user", "content": message}]
-    query = " ".join(row["content"] for row in current[-7:] if row["role"] == "user")[-4500:]
     started = perf_counter()
-    sources = search.retrieve(query)
-    answer, used = model_answer(current, sources)
+    result = orchestrator.respond(current)
     elapsed = round((perf_counter() - started) * 1000)
+    trace = {"decision": result.decision, "confidence": result.confidence,
+             "reason": result.reason, "search_ms": result.retrieval_ms,
+             "generation_ms": result.generation_ms, "search_mode": search.mode}
     timestamp = now()
     with connect() as db:
         db.execute("INSERT INTO messages(session_id,role,content,created_at) VALUES (?,?,?,?)",
                    (data.session_id, "user", message, timestamp))
-        db.execute("""INSERT INTO messages(session_id,role,content,created_at,response_ms,sources_json)
-                      VALUES (?,?,?,?,?,?)""",
-                   (data.session_id, "assistant", answer, timestamp, elapsed,
-                    json.dumps(used, ensure_ascii=False)))
+        db.execute("""INSERT INTO messages(session_id,role,content,created_at,response_ms,sources_json,trace_json)
+                      VALUES (?,?,?,?,?,?,?)""",
+                   (data.session_id, "assistant", result.answer, timestamp, elapsed,
+                    json.dumps(result.sources, ensure_ascii=False), json.dumps(trace, ensure_ascii=False)))
         db.execute("UPDATE sessions SET updated_at=? WHERE id=?", (timestamp, data.session_id))
         has_lead = db.execute("SELECT 1 FROM leads WHERE session_id=?", (data.session_id,)).fetchone()
     user_count = sum(row["role"] == "user" for row in current)
-    offer = not has_lead and (user_count >= 2 or not used)
-    return {"answer": answer, "response_ms": elapsed, "sources": used,
-            "offer_manager": bool(offer), "search": search.mode}
+    offer = not has_lead and (user_count >= 2 or result.decision == "insufficient")
+    return {"answer": result.answer, "response_ms": elapsed, "sources": result.sources,
+            "offer_manager": bool(offer), "search": search.mode, "trace": trace}
 
 
 @app.post("/api/leads")
@@ -347,26 +372,32 @@ def create_lead(data: LeadInput):
     with connect() as db:
         if not session_exists(db, data.session_id):
             raise HTTPException(404, "Диалог не найден")
-        rows = db.execute("SELECT role,content FROM messages WHERE session_id=? ORDER BY id",
+        rows = db.execute("SELECT role,content,sources_json FROM messages WHERE session_id=? ORDER BY id",
                           (data.session_id,)).fetchall()
         if not any(row["role"] == "user" for row in rows):
             raise HTTPException(422, "Сначала опишите задачу в чате")
-        user_points = [row["content"] for row in rows if row["role"] == "user"][-5:]
-        assistant_points = [row["content"] for row in rows if row["role"] == "assistant"][-2:]
-        summary = "Компания: " + company + ". Запрос клиента: " + " / ".join(user_points)
-        if assistant_points:
-            summary += ". Обсуждение: " + " / ".join(assistant_points)
-        summary = summary[:800]
+        messages = [{"role": row["role"], "content": row["content"],
+                     "sources": json.loads(row["sources_json"])} for row in rows]
+        brief = summary_agent.summarize(messages)
+        summary = brief.as_text()
+        created_at = now()
         try:
             cursor = db.execute("""INSERT INTO leads(session_id,full_name,phone,company,summary,created_at)
-                VALUES (?,?,?,?,?,?)""", (data.session_id, name, phone, company, summary, now()))
+                VALUES (?,?,?,?,?,?)""", (data.session_id, name, phone, company, summary, created_at))
         except sqlite3.IntegrityError:
             raise HTTPException(409, "Заявка уже создана") from None
+        pdf = summary_agent.render_pdf(cursor.lastrowid, name, phone, company, created_at, brief)
+        LEAD_PDF_DIR.mkdir(parents=True, exist_ok=True)
+        pdf_path = LEAD_PDF_DIR / f"lead-{cursor.lastrowid}.pdf"
+        temporary = pdf_path.with_suffix(".tmp")
+        temporary.write_bytes(pdf)
+        os.replace(temporary, pdf_path)
         db.execute("""INSERT INTO messages(session_id,role,content,created_at)
                       VALUES (?,?,?,?)""", (data.session_id, "assistant",
-                      "Заявка сформирована и сохранена. Резюме для менеджера: " + summary, now()))
+                      "Заявка сформирована и сохранена. PDF-резюме для менеджера готово.", now()))
         db.execute("UPDATE sessions SET updated_at=? WHERE id=?", (now(), data.session_id))
-    return {"id": cursor.lastrowid, "summary": summary}
+    return {"id": cursor.lastrowid, "summary": summary,
+            "pdf_url": f"/api/leads/{cursor.lastrowid}/pdf"}
 
 
 @app.get("/api/leads")
@@ -374,3 +405,23 @@ def list_leads():
     with connect() as db:
         rows = db.execute("SELECT * FROM leads ORDER BY id DESC").fetchall()
     return [dict(row) for row in rows]
+
+
+@app.get("/api/leads/{lead_id}/pdf")
+def download_lead_pdf(lead_id: int):
+    with connect() as db:
+        lead = db.execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone()
+        if not lead:
+            raise HTTPException(404, "Заявка не найдена")
+        pdf_path = LEAD_PDF_DIR / f"lead-{lead_id}.pdf"
+        if not pdf_path.is_file():
+            rows = db.execute("SELECT role,content,sources_json FROM messages WHERE session_id=? ORDER BY id",
+                              (lead["session_id"],)).fetchall()
+            messages = [{"role": row["role"], "content": row["content"],
+                         "sources": json.loads(row["sources_json"])} for row in rows]
+            brief = summary_agent.summarize(messages)
+            pdf_path.parent.mkdir(parents=True, exist_ok=True)
+            pdf_path.write_bytes(summary_agent.render_pdf(lead_id, lead["full_name"], lead["phone"],
+                                                        lead["company"], lead["created_at"], brief))
+    return FileResponse(pdf_path, media_type="application/pdf",
+                        filename=f"energytool-lead-{lead_id}.pdf")

@@ -142,6 +142,11 @@ button { cursor: pointer; }
 .manager-offer strong { font-size: 12px; }
 .manager-offer p { margin: 4px 0 0; color: #908c98; font-size: 11px; line-height: 1.5; }
 .manager-offer button { flex: none; margin-left: auto; padding: 10px 12px; border: 0; border-radius: 8px; background: #e30613; color: white; font-size: 10px; font-weight: 700; }
+.lead-download { display: flex; align-items: center; justify-content: space-between; gap: 18px; max-width: 760px; margin: 24px auto 0; padding: 18px; border: 1px solid #cbe8db; border-radius: 14px; background: #f4fcf8; }
+.lead-download strong { font-size: 12px; }
+.lead-download p { margin: 4px 0 0; color: #6e8278; font-size: 11px; }
+.lead-download a { flex: none; padding: 11px 13px; border-radius: 8px; background: #168857; color: white; text-decoration: none; font-size: 11px; font-weight: 700; }
+.lead-download a:hover { background: #107046; }
 
 /* Composer */
 .composer-wrap { flex: none; padding: 12px 34px 21px; background: linear-gradient(#fbfbfc00, #fbfbfc 16%); }
@@ -166,6 +171,11 @@ button { cursor: pointer; }
 .muted { color: #9996a0; font-size: 12px; line-height: 1.7; }
 .metric { display: flex; justify-content: space-between; align-items: center; margin-bottom: 21px; padding: 13px; border-radius: 10px; background: #f8f8fa; color: #77747e; font-size: 11px; }
 .metric b { color: #292630; font-size: 13px; }
+.agent-trace { padding: 13px; margin-bottom: 20px; border: 1px solid #eceaf0; border-radius: 10px; }
+.agent-trace h3 { margin: 0 0 9px; }
+.agent-trace p { display: flex; justify-content: space-between; gap: 8px; margin: 8px 0; font-size: 10px; }
+.agent-trace p span { color: #8f8b95; text-align: right; }
+.agent-trace small { display: block; padding-top: 8px; border-top: 1px solid #f0eef2; color: #8f8b95; font-size: 10px; line-height: 1.5; }
 .debug-body h3 { color: #898691; font-size: 10px; letter-spacing: .8px; }
 .source-card { padding: 14px; margin-bottom: 10px; border: 1px solid #eceaf0; border-radius: 11px; }
 .source-card strong { display: block; overflow-wrap: anywhere; font-size: 11px; }
@@ -211,6 +221,8 @@ dialog small { display: block; margin-top: 12px; color: #a3a0aa; text-align: cen
   .suggestions button { justify-content: flex-start; }
   .manager-offer { flex-wrap: wrap; }
   .manager-offer button { width: 100%; margin-left: 0; }
+  .lead-download { flex-wrap: wrap; }
+  .lead-download a { width: 100%; text-align: center; }
   .composer-note span:last-child { display: none; }
 }
 @media (max-height: 680px) and (min-width: 761px) {

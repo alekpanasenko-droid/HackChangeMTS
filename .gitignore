@@ -11,3 +11,5 @@ MGTS_hackathon-main/*
 knowledge-base-word-work/
 knowledge-base-word.zip
 system_prompt.txt
+data/
+.venv/
